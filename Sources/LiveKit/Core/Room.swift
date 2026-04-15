@@ -30,6 +30,55 @@ public class Room: NSObject, @unchecked Sendable, ObservableObject, Loggable {
 
     public let delegates = MulticastDelegate<RoomDelegate>(label: "RoomDelegate")
 
+    // MARK: - SDP transform
+
+    /// Optional SDP-transform delegate. When set, LiveKit invokes the
+    /// delegate before every ``setLocalDescription`` / ``setRemoteDescription``
+    /// call on the underlying PeerConnection, letting the app edit raw
+    /// SDP (e.g. add Opus `packetlossperc` / `ptime` fmtp parameters or
+    /// FlexFEC rtpmap lines) without an SDK-level per-parameter API.
+    ///
+    /// Set before ``Room/connect(url:token:connectOptions:roomOptions:)``
+    /// or immediately after, so the very first offer is transformed.
+    /// Changing mid-call is allowed — subsequent renegotiations pick up
+    /// the new delegate.
+    ///
+    /// Held weakly — the app owns the delegate's lifecycle.
+    public weak var sdpTransformDelegate: SDPTransformDelegate? {
+        didSet {
+            let delegate = sdpTransformDelegate
+            Task { [weak self] in
+                guard let self else { return }
+                await self._wireSDPTransform(delegate)
+            }
+        }
+    }
+
+    /// Internal helper — build a `Transport.SDPTransformBlock` from the
+    /// currently-installed delegate (or `nil` to clear) and push it to
+    /// both publisher and subscriber transports if they exist. Also
+    /// called from `Room+Engine.swift` right after transport creation
+    /// so a delegate set before `connect()` is applied on the first
+    /// offer.
+    func _wireSDPTransform(_ delegate: SDPTransformDelegate?) async {
+        let roomRef = self
+        var block: Transport.SDPTransformBlock?
+        if let delegate {
+            block = { [weak delegate] sdp, direction, target in
+                guard let delegate else { return sdp }
+                return await delegate.room(
+                    roomRef,
+                    willSetSessionDescription: sdp,
+                    direction: direction,
+                    target: target
+                )
+            }
+        }
+        let (pub, sub) = _state.read { ($0.publisher, $0.subscriber) }
+        await pub?.set(sdpTransform: block)
+        await sub?.set(sdpTransform: block)
+    }
+
     // MARK: - Metrics
 
     lazy var metricsManager = MetricsManager()

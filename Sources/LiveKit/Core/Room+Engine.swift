@@ -172,6 +172,13 @@ extension Room {
                 try await signalClient.send(offer: offer, offerId: offerId)
             }
 
+            // Install the app-provided SDP transform onto the freshly-created
+            // transports so the very first offer/answer is already subject
+            // to it. Re-installed any time ``sdpTransformDelegate`` changes.
+            if let delegate = sdpTransformDelegate {
+                await _wireSDPTransform(delegate)
+            }
+
             // data over pub channel for backwards compatibility
 
             let reliableDataChannel = await publisher.dataChannel(for: LKRTCDataChannel.Labels.reliable,

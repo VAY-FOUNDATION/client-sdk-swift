@@ -23,6 +23,12 @@ actor Transport: NSObject, Loggable {
 
     typealias OnOfferBlock = @Sendable (LKRTCSessionDescription, UInt32) async throws -> Void
 
+    /// Closure form of ``SDPTransformDelegate``. Receives SDP + direction
+    /// + target; returns (possibly modified) SDP. Plumbed here so apps
+    /// can self-serve Opus / FlexFEC fmtp edits without waiting for
+    /// dedicated SDK fields. See `SDPTransformDelegate.swift`.
+    typealias SDPTransformBlock = @Sendable (String, SDPDirection, TransportTarget) async -> String
+
     // MARK: - Public
 
     nonisolated let target: Livekit_SignalTarget
@@ -57,6 +63,10 @@ actor Transport: NSObject, Loggable {
     private var _onOffer: OnOfferBlock?
     private var _isRestartingIce: Bool = false
     private var _latestOfferId: UInt32 = 0
+    /// App-provided SDP transform. When non-nil, applied to every local
+    /// and remote session description before it reaches the PeerConnection.
+    /// Wired by Room when ``Room/sdpTransformDelegate`` is set.
+    private var _sdpTransform: SDPTransformBlock?
 
     // forbid direct access to PeerConnection
     private let _pc: LKRTCPeerConnection
@@ -99,6 +109,29 @@ actor Transport: NSObject, Loggable {
         }
     }
 
+    /// Install or clear the app-provided SDP transform. Passing `nil`
+    /// removes any prior transform and restores passthrough behaviour.
+    func set(sdpTransform block: SDPTransformBlock?) {
+        _sdpTransform = block
+    }
+
+    /// Apply the installed transform (if any) to a session description.
+    /// Returns a freshly-constructed `LKRTCSessionDescription` preserving
+    /// the type (offer/pranswer/answer/rollback). If no transform is
+    /// installed or the transform returns the input unchanged, returns
+    /// the original description to avoid an unnecessary allocation.
+    private func _applyTransform(
+        to sd: LKRTCSessionDescription,
+        direction: SDPDirection
+    ) async -> LKRTCSessionDescription {
+        guard let transform = _sdpTransform else { return sd }
+        let originalSDP = sd.sdp
+        let targetKind: TransportTarget = (target == .publisher) ? .publisher : .subscriber
+        let transformed = await transform(originalSDP, direction, targetKind)
+        guard transformed != originalSDP else { return sd }
+        return LKRTCSessionDescription(type: sd.type, sdp: transformed)
+    }
+
     func set(onOfferBlock block: @escaping OnOfferBlock) {
         _onOffer = block
     }
@@ -126,8 +159,12 @@ actor Transport: NSObject, Loggable {
     }
 
     func set(remoteDescription sd: LKRTCSessionDescription) async throws {
+        // Apply the app-provided SDP transform (if any) before handing
+        // the description to the PeerConnection. No-op passthrough when
+        // no transform is installed.
+        let effective = await _applyTransform(to: sd, direction: .remote)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            _pc.setRemoteDescription(sd) { error in
+            _pc.setRemoteDescription(effective) { error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else {
@@ -314,8 +351,12 @@ extension Transport {
     }
 
     func set(localDescription sd: LKRTCSessionDescription) async throws {
+        // Apply the app-provided SDP transform (if any) before handing
+        // the description to the PeerConnection. No-op passthrough when
+        // no transform is installed.
+        let effective = await _applyTransform(to: sd, direction: .local)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            _pc.setLocalDescription(sd) { error in
+            _pc.setLocalDescription(effective) { error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else {
