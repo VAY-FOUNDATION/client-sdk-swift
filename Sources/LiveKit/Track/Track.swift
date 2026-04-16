@@ -466,3 +466,12 @@ extension Track {
         }
     }
 }
+
+// MARK: - VAY: package-internal sender accessor
+
+extension Track {
+    /// Package-internal accessor for the underlying RTCRtpSender.
+    /// Consumed by LocalParticipant+Audio.swift to drive mid-call
+    /// bitrate changes via setParameters(). Not exposed publicly.
+    var rtpSender: LKRTCRtpSender? { _state.rtpSender }
+}
