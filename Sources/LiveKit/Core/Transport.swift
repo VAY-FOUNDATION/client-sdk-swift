@@ -71,6 +71,15 @@ actor Transport: NSObject, Loggable {
     // forbid direct access to PeerConnection
     private let _pc: LKRTCPeerConnection
 
+    /// CP-VideoStartBitrate: seed BWE so video opens at a usable resolution
+    /// instead of ramping from WebRTC's ~300 kbps floor. Only the current
+    /// estimate is set (min/max nil) so GCC still adapts. No-op-safe.
+    func setStartBitrate(currentBps: Int) {
+        _ = _pc.setBweMinBitrateBps(nil,
+                                    currentBitrateBps: NSNumber(value: currentBps),
+                                    maxBitrateBps: nil)
+    }
+
     private lazy var _iceCandidatesQueue = QueueActor<IceCandidate>(onProcess: { [weak self] iceCandidate in
         guard let self else { return }
 
